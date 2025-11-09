@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Performance Dashboard</title>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #fafafa;
+    color: #333;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px;
+    display: grid;
+    grid-gap: 16px;
+    height: 100%;
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .controls label {
+    font-size: 14px;
+    user-select: none;
+  }
+
+  .controls input[type="number"] {
+    margin-left: 8px;
+    width: 80px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+  }
+
+  .controls button {
+    padding: 8px 16px;
+    border: none;
+    background-color: #007acc;
+    color: white;
+    cursor: pointer;
+    border-radius: 6px;
+    font-weight: 600;
+    transition: background-color 0.3s ease;
+  }
+  .controls button:hover {
+    background-color: #005f99;
+  }
+
+  .tip {
+    opacity: 0.7;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .metric {
+    font-size: 14px;
+    padding: 12px 16px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: white;
+    font-weight: 600;
+  }
+
+  .content-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    height: 100%;
+  }
+
+  @media (max-width: 900px) {
+    .content-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .chart-container, .table-container {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: white;
+    overflow: hidden;
+    height: 280px;
+  }
+
+  .table-container {
+    overflow-y: auto;
+    font-size: 13px;
+  }
+
+  .row-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+    border-bottom: 1px solid #eee;
+    align-items: center;
+    font-family: monospace;
+  }
+
+  .row-item:nth-child(even) {
+    background: #fafafa;
+  }
+
+  .time-cell {
+    min-width: 160px;
+  }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <div class="controls" role="region" aria-label="Performance controls">
+    <label for="hz">Hz (points/sec):
+      <input id="hz" type="number" min="1" max="240" value="10" aria-live="polite" />
+    </label>
+    <label for="window">Window (sec):
+      <input id="window" type="number" min="5" max="600" value="60" aria-live="polite" />
+    </label>
+    <button id="stress" aria-pressed="false" title="Increase points generation rate by 5x">Stress x5</button>
+    <span class="tip">Tip: scroll table; try 50–120 Hz; window 120–300s.</span>
+  </div>
+
+  <div class="metric" id="perf" role="status" aria-live="polite" aria-atomic="true">
+    Perf — FPS: — | Mem: — MB | Points: 0
+  </div>
+
+  <div class="content-grid">
+    <div class="chart-container">
+      <canvas id="chart" aria-label="Performance chart" role="img" style="width: 100%; height: 100%; display: block;"></canvas>
+    </div>
+    <div class="table-container" id="table" tabindex="0" aria-label="Data table display"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const data = [];
+  let hz = 10; 
+  let windowMs = 60_000; 
+  let generationTimeoutId = null;
+  let lastVal = 0;
+
+  const elHz = document.getElementById('hz');
+  const elWindow = document.getElementById('window');
+  const elPerf = document.getElementById('perf');
+  const elStress = document.getElementById('stress');
+  const table = document.getElementById('table');
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.floor(rect.width * dpr);
+    const height = Math.floor(rect.height * dpr);
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  }
+  new ResizeObserver(resizeCanvas).observe(canvas);
+
+  function startDataGeneration() {
+    if (generationTimeoutId) clearTimeout(generationTimeoutId);
+    const interval = Math.max(1, Math.floor(1000 / hz));
+
+    function generatePoint() {
+      const t = Date.now();
+      lastVal += (Math.random() - 0.5) * 2;
+      data.push({ t, v: lastVal });
+
+      const cutoff = t - windowMs;
+      while (data.length > 0 && data[0].t < cutoff) {
+        data.shift();
+      }
+
+      generationTimeoutId = setTimeout(generatePoint, interval);
+    }
+    generatePoint();
+  }
+
+  const ROW_HEIGHT = 28;
+
+  function renderTable() {
+    const viewportHeight = table.clientHeight;
+    const scrollTop = table.scrollTop;
+    const visibleRows = Math.ceil(viewportHeight / ROW_HEIGHT) + 4;
+    const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 2);
+    const endRow = Math.min(data.length, startRow + visibleRows);
+    const topOffset = startRow * ROW_HEIGHT;
+
+    if (!table._container) {
+      const container = document.createElement('div');
+      container.style.position = 'relative';
+      table.innerHTML = '';
+      table.appendChild(container);
+      table._container = container;
+    }
+    const container = table._container;
+    container.style.height = `${data.length * ROW_HEIGHT}px`;
+
+    if (!container._content) {
+      const content = document.createElement('div');
+      content.style.position = 'absolute';
+      content.style.left = 0;
+      content.style.right = 0;
+      container.appendChild(content);
+      container._content = content;
+    }
+    const content = container._content;
+    content.style.top = `${topOffset}px`;
+
+    const fragment = document.createDocumentFragment();
+    for (let i = startRow; i < endRow; i++) {
+      const { t, v } = data[i];
+      const row = document.createElement('div');
+      row.className = 'row-item';
+
+      const timeCell = document.createElement('div');
+      timeCell.className = 'time-cell';
+      timeCell.textContent = new Date(t).toLocaleTimeString();
+
+      const valueCell = document.createElement('div');
+      valueCell.textContent = v.toFixed(3);
+
+      row.appendChild(timeCell);
+      row.appendChild(valueCell);
+      fragment.appendChild(row);
+    }
+
+    content.innerHTML = '';
+    content.appendChild(fragment);
+  }
+
+  let fpsCount = 0;
+  let fpsLastFrameTime = performance.now();
+  let currentFps = 0;
+
+  function drawChart(timestamp) {
+    resizeCanvas();
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (data.length > 0) {
+      const now = Date.now();
+      const xMin = now - windowMs;
+      const xMax = now;
+
+      let yMin = Infinity;
+      let yMax = -Infinity;
+      for (let i = data.length - 1; i >= 0; i--) {
+        const point = data[i];
+        if (point.t < xMin) break;
+        if (point.v < yMin) yMin = point.v;
+        if (point.v > yMax) yMax = point.v;
+      }
+      if (!isFinite(yMin) || !isFinite(yMax) || yMax <= yMin) {
+        yMin = -1;
+        yMax = 1;
+      }
+      const padding = (yMax - yMin) * 0.2;
+      yMin -= padding;
+      yMax += padding;
+
+      const xScale = (x) => ((x - xMin) / (xMax - xMin)) * width;
+      const yScale = (y) => height - ((y - yMin) / (yMax - yMin)) * height;
+
+      const totalPoints = data.length;
+      const maxPoints = Math.min(totalPoints, Math.floor(width * 2));
+      const step = Math.max(1, Math.floor(totalPoints / maxPoints));
+
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < totalPoints; i += step) {
+        const p = data[i];
+        const x = xScale(p.t);
+        if (x < -2 || x > width + 2) continue;
+        const y = yScale(p.v);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#007acc';
+      ctx.stroke();
+    }
+
+    fpsCount++;
+    const timeElapsed = timestamp - fpsLastFrameTime;
+    if (timeElapsed >= 1000) {
+      currentFps = Math.round((fpsCount * 1000) / timeElapsed);
+      fpsCount = 0;
+      fpsLastFrameTime = timestamp;
+
+      const memUsedMB = performance.memory?.usedJSHeapSize
+        ? Math.round(performance.memory.usedJSHeapSize / 1048576)
+        : null;
+
+      elPerf.textContent = `Perf — FPS: ${currentFps} ${memUsedMB !== null ? `| Mem: ${memUsedMB} MB` : ''} | Points: ${data.length}`;
+
+      renderTable();
+    }
+
+    requestAnimationFrame(drawChart);
+  }
+
+  elHz.addEventListener('change', () => {
+    const value = Number(elHz.value);
+    if (value >= 1 && value <= 240) {
+      hz = value;
+      startDataGeneration();
+    }
+  });
+
+  elWindow.addEventListener('change', () => {
+    const value = Number(elWindow.value);
+    if (value >= 5 && value <= 600) {
+      windowMs = value * 1000;
+    }
+  });
+
+  elStress.addEventListener('click', () => {
+    hz = Math.min(240, hz * 5);
+    elHz.value = hz;
+    elStress.setAttribute('aria-pressed', 'true');
+    startDataGeneration();
+    setTimeout(() => elStress.setAttribute('aria-pressed', 'false'), 200);
+  });
+
+  table.addEventListener('scroll', () => renderTable());
+
+  (function seedInitialData() {
+    const now = Date.now();
+    let value = 0;
+    const step = 100; // ms
+    for (let t = now - windowMs; t <= now; t += step) {
+      value += (Math.random() - 0.5) * 2;
+      data.push({ t, v: value });
+    }
+    lastVal = value;
+    renderTable();
+  })();
+
+  startDataGeneration();
+  requestAnimationFrame(drawChart);
+})();
+</script>
+</body>
+</html>
